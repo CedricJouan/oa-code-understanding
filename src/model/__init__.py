@@ -1,7 +1,8 @@
 from models import *
 from agents.descriptors import FileDescriptor, PyFileDescriptor, DirDescriptor
-from agents.dspy_collectors import mk_react_collector, PyFileCollectorTool, FileCollectorTool
-import dspy
+from agents.collectors import DirCollectorTool, FileCollectorTool, PyFileCollectorTool, mk_collector_agent
+from agents.architect import mk_architect_agent
+from langchain.agents import AgentExecutor 
 import os
 import pickle
 from typing import List, Optional
@@ -10,69 +11,84 @@ from typing import List, Optional
 class File(FileBase):
     name: str
     content: str
+    parent : Optional['Directory'] = None
+    collector_tool: Optional[FileCollectorTool] = None
     description: Optional[FileDescription] = None
-    collector: Optional[dspy.Module] = None
-
-    class Config:
-        arbitrary_types_allowed = True
 
     def __repr__(self):
         return f"File(name={self.name})"
     
-    def get_collector(self):
-        if self.collector is None:
-            self.collector = FileCollectorTool(file=self)
-        return self.collector
+    def get_file_path(self):
+        return os.path.join(self.parent.get_file_path(), self.name)
+    
+    def get_tool(self):
+        if self.collector_tool is None:
+            self.collector_tool = FileCollectorTool(file=self)
+        return self.collector_tool
     
     def get_description(self):
         if self.description is None:
             descriptor = FileDescriptor()
             description = descriptor(self.name, self.content)
             self.description = FileDescription(name=self.name, 
+                                               path=self.get_file_path(),
                                                description=description.get("long_description"))
         return self.description
 
 class PyFile(PyFileBase):
     name: str
     content: str
+    parent : Optional['Directory'] = None
+    collector_tool: Optional[PyFileCollectorTool] = None
     description: Optional[PyFileDescription] = None
-    collector: Optional[dspy.Module] = None
-
-    class Config:
-        arbitrary_types_allowed = True
 
     def __repr__(self):
         return f"PyFile(name={self.name}"
     
-    def get_collector(self):
-        if self.collector is None:
-            self.collector = PyFileCollectorTool(file=self)
-        return self.collector
+    def get_file_path(self):
+        return os.path.join(self.parent.get_file_path(), self.name)
+    
+    def get_tool(self):
+        if self.collector_tool is None:
+            self.collector_tool = PyFileCollectorTool(file=self)
+        return self.collector_tool
     
     def get_description(self):
         if self.description is None:
             python_descriptor = PyFileDescriptor()
             description = python_descriptor(self.name, self.content)
             self.description = PyFileDescription(name=self.name,
+                                                 path=self.get_file_path(),
                                                 description=description.get("long_description"))
         return self.description
 
 class Directory(DirBase):
     name: str
-    parent: Optional['Directory'] = None
     children: List['Directory'] = []
     files: List[File] = []
+    parent: Optional['Directory'] = None
+    collector_tool: Optional[DirCollectorTool] = None
     description: Optional[DirDescription] = None
-    collector: Optional[dspy.Module] = None
-    
-    class Config:
-        arbitrary_types_allowed = True
+    collector: Optional[AgentExecutor] = None
 
+    def __repr__(self):
+        return f"Directory(name={self.name})"
+    
+    def get_file_path(self):
+        if self.parent is None:
+            return self.name
+        return os.path.join(self.parent.get_file_path(), self.name)
+    
+    def get_tool(self):
+        if self.collector_tool is None:
+            self.collector_tool = DirCollectorTool(directory=self)
+        return self.collector_tool
+    
     def get_collector(self):
         if self.collector is None:
-            file_collectors = [f.get_collector() for f in self.files]
-            dir_collectors = [c.get_collector() for c in self.children]
-            self.collector = mk_react_collector(file_collectors, dir_collectors)
+            file_tools = [f.get_tool() for f in self.files]
+            dir_tools = [d.get_tool() for d in self.children]
+            self.collector = mk_collector_agent(tools=file_tools + dir_tools, directory=self)
         return self.collector
 
     def get_description(self):
@@ -83,13 +99,18 @@ class Directory(DirBase):
             directory_structure = self.get_structure()
             long_description, short_description = descriptor(children_descriptions, files_descriptions, directory_structure)
             self.description = DirDescription(name=self.name, 
+                                              path=self.get_file_path(),
                                               description=short_description.get("short_description"),
-                                              long_description=long_description.get("long_description"))
+                                              long_description=long_description.get("long_description"),
+                                              directory_structure=directory_structure)
         return self.description
     
 
-    def add_file(self, file):
-        self.files.append(file)
+    def add_file(self, file_name, file_content):
+        if file_name.endswith('.py'):
+            self.files.append(PyFile(name=file_name, content=file_content, parent=self))
+        else:
+            self.files.append(File(name=file_name, content=file_content, parent=self))
 
     def add_directory(self, directory_name):
         new_directory = Directory(name=directory_name, parent=self)
@@ -108,9 +129,6 @@ class Directory(DirBase):
                 return result
         return None
 
-    def __repr__(self):
-        return f"Directory(name={self.name})"
-
     def get_structure(self, indent=0):
         output = []
         output.append(' ' * indent + self.name + '/')
@@ -121,6 +139,7 @@ class Directory(DirBase):
         return '\n'.join(output)
 
 class Repo(Directory):
+    architect : Optional[AgentExecutor] = None
     def __init__(self, root_path: Optional[str] = None, skip_hidden: bool = True):
         super().__init__(name=os.path.basename(root_path) if root_path else 'root')
         if root_path:
@@ -145,11 +164,17 @@ class Repo(Directory):
                 filepath = os.path.join(dirpath, filename)
                 with open(filepath, 'r') as file:
                     file_content = file.read()
-                if filename.endswith('.py'):
-                    current_dir.add_file(PyFile(name=filename, content=file_content))
-                elif filename.endswith('.txt'):
-                    current_dir.add_file(File(name=filename, content=file_content))
+                current_dir.add_file(file_name=filename, file_content=file_content)
 
+    def init_architect(self):
+        _ = self.get_description()
+        _ = self.get_collector()
+        self.architect = mk_architect_agent(repo=self)
+
+    def query(self, information_request):
+        if self.architect is None:
+            self.init_architect()
+        return self.architect.invoke({"input": information_request})
 
     def save_to_file(self, file_path):
         with open(file_path, 'wb') as f:

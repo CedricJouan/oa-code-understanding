@@ -3,7 +3,6 @@ import dspy
 from models import *
 from typing import List
 
-
 class FileDescriptorSignature(dspy.Signature): # WE maybe want to give more context in input here... like what's the direcory around him about??...
     file_name = dspy.InputField(desc='The name of the file')
     file_content = dspy.InputField(desc='Content of the File')
@@ -45,6 +44,9 @@ class PyFileDescriptor(dspy.Module):
         return long_description
     
 
+###################################################
+################  Dir descriptor  ###############
+###################################################
 
 class DirDescriptorSignature(dspy.Signature):
     directory_structure = dspy.InputField(desc='The structure of the directory')
