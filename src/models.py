@@ -11,11 +11,13 @@ class DirDescription(BaseModel):
 class FileDescription(BaseModel):
     name : str
     path : str
+    long_description : str
     description : str
 
 class PyFileDescription(BaseModel):
     name : str
     path : str
+    long_description : str
     description : str
 
 class FileBase(BaseModel):

@@ -29,10 +29,11 @@ class File(FileBase):
     def get_description(self):
         if self.description is None:
             descriptor = FileDescriptor()
-            description = descriptor(self.name, self.content)
+            long_description, short_description = descriptor(self.name, self.content)
             self.description = FileDescription(name=self.name, 
                                                path=self.get_file_path(),
-                                               description=description.get("long_description"))
+                                               long_description=long_description.get("long_description"),
+                                               description=short_description.get("short_description"))
         return self.description
 
 class PyFile(PyFileBase):
@@ -56,10 +57,11 @@ class PyFile(PyFileBase):
     def get_description(self):
         if self.description is None:
             python_descriptor = PyFileDescriptor()
-            description = python_descriptor(self.name, self.content)
+            long_description, short_description = python_descriptor(self.name, self.content)
             self.description = PyFileDescription(name=self.name,
                                                  path=self.get_file_path(),
-                                                description=description.get("long_description"))
+                                                 long_description=long_description.get("long_description"),
+                                                 description=short_description.get("short_description"))
         return self.description
 
 class Directory(DirBase):
@@ -166,14 +168,19 @@ class Repo(Directory):
                     file_content = file.read()
                 current_dir.add_file(file_name=filename, file_content=file_content)
 
-    def init_architect(self):
+    def init_repo(self):
         _ = self.get_description()
         _ = self.get_collector()
         self.architect = mk_architect_agent(repo=self)
 
     def query(self, information_request):
+        if self.collector is None:
+            self.init_repo()
+        return self.collector.invoke({"input": information_request})
+
+    def query_architect(self, information_request):
         if self.architect is None:
-            self.init_architect()
+            self.init_repo()
         return self.architect.invoke({"input": information_request})
 
     def save_to_file(self, file_path):
